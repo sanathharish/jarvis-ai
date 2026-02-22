@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Mic, MicOff, Send } from "lucide-react";
 import JarvisWebSocket from "./services/websocket";
+import "./App.css";
 
 const statusColors = {
   idle: "bg-blue-500",
@@ -25,6 +26,7 @@ export default function App() {
   const [currentResponse, setCurrentResponse] = useState("");
   const jarvisRef = useRef(null);
   const bottomRef = useRef(null);
+  const pendingTraceRef = useRef(null);
 
   useEffect(() => {
     jarvisRef.current = new JarvisWebSocket((data) => {
@@ -43,7 +45,11 @@ export default function App() {
           setCurrentResponse((prev) => prev + data.token);
           break;
         case "response_complete":
-          setMessages((prev) => [...prev, { role: "assistant", content: data.full_text }]);
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: data.full_text, trace: pendingTraceRef.current },
+          ]);
+          pendingTraceRef.current = null;
           setCurrentResponse("");
           setStatus("idle");
           break;
@@ -51,6 +57,24 @@ export default function App() {
           setMessages((prev) => [...prev, { role: "system", content: `Error: ${data.message}` }]);
           setStatus("idle");
           break;
+        case "agent_trace": {
+          let attached = false;
+          setMessages((prev) => {
+            const next = [...prev];
+            for (let i = next.length - 1; i >= 0; i -= 1) {
+              if (next[i].role === "assistant") {
+                next[i] = { ...next[i], trace: data.trace };
+                attached = true;
+                break;
+              }
+            }
+            return next;
+          });
+          if (!attached) {
+            pendingTraceRef.current = data.trace;
+          }
+          break;
+        }
       }
     });
     jarvisRef.current.connect();
@@ -81,75 +105,118 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center">
-      {/* Header */}
-      <div className="w-full max-w-3xl px-4 py-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-widest text-blue-400">JARVIS</h1>
-        <div className="flex items-center gap-2">
-          <div className={`w-3 h-3 rounded-full ${statusColors[status]}`} />
-          <span className="text-sm text-gray-400">{statusLabels[status]}</span>
-        </div>
-      </div>
+    <div className="min-h-screen text-white bg-slate-950 app-grid">
+      <div className="bg-orb bg-orb-1" />
+      <div className="bg-orb bg-orb-2" />
+      <div className="bg-orb bg-orb-3" />
 
-      {/* Orb */}
-      <div className="my-8">
-        <button
-          onClick={toggleListening}
-          className={`w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 ${
-            isListening
-              ? "bg-blue-600 shadow-[0_0_60px_rgba(59,130,246,0.8)] scale-110"
-              : "bg-gray-800 hover:bg-gray-700 shadow-[0_0_30px_rgba(59,130,246,0.3)]"
-          }`}
-        >
-          {isListening ? <MicOff size={40} /> : <Mic size={40} />}
-        </button>
-        {interimText && (
-          <p className="text-center text-gray-400 mt-4 italic text-sm">{interimText}</p>
-        )}
-      </div>
-
-      {/* Chat Feed */}
-      <div className="w-full max-w-3xl flex-1 px-4 space-y-4 overflow-y-auto max-h-[50vh]">
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div
-              className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                msg.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-800 text-gray-100"
-              }`}
-            >
-              {msg.content}
+      <div className="mx-auto w-full max-w-6xl px-4 pb-10">
+        <header className="pt-8 pb-6 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="brand-mark">J</div>
+            <div>
+              <div className="text-2xl font-semibold tracking-[0.35em] text-cyan-300">JARVIS</div>
+              <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Voice Assistant Console</div>
             </div>
           </div>
-        ))}
-        {currentResponse && (
-          <div className="flex justify-start">
-            <div className="max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed bg-gray-800 text-gray-100">
-              {currentResponse}
-              <span className="inline-block w-2 h-4 bg-blue-400 ml-1 animate-pulse" />
-            </div>
+          <div className="status-pill">
+            <span className={`status-dot ${statusColors[status]}`} />
+            <span>{statusLabels[status]}</span>
           </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
+        </header>
 
-      {/* Text Input */}
-      <div className="w-full max-w-3xl px-4 py-6">
-        <div className="flex gap-2">
-          <input
-            className="flex-1 bg-gray-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Or type a message..."
-            value={textInput}
-            onChange={(e) => setTextInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && sendText()}
-          />
-          <button
-            onClick={sendText}
-            className="bg-blue-600 hover:bg-blue-500 rounded-xl px-4 py-3 transition-colors"
-          >
-            <Send size={18} />
-          </button>
+        <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
+          <section className="panel">
+            <div className="panel-title">Voice Control</div>
+            <div className="panel-subtitle">Tap to start or stop capture.</div>
+
+            <div className="orb-wrap">
+              <button
+                type="button"
+                onClick={toggleListening}
+                className={`orb ${isListening ? "orb-active" : ""}`}
+              >
+                {isListening ? <MicOff size={34} /> : <Mic size={34} />}
+              </button>
+              <div className="orb-ring" />
+              <div className="orb-ring orb-ring-secondary" />
+            </div>
+
+            <div className="transcript-card">
+              <div className="transcript-title">Live Transcript</div>
+              <div className="transcript-body">
+                {interimText ? (
+                  <span className="italic text-slate-200">{interimText}</span>
+                ) : (
+                  <span className="text-slate-500">Waiting for audio…</span>
+                )}
+              </div>
+            </div>
+
+            <div className="panel-footer">
+              <span className="text-xs text-slate-400">Tip: keep the mic close for best accuracy.</span>
+            </div>
+          </section>
+
+          <section className="panel panel-chat">
+            <div className="panel-title">Conversation</div>
+            <div className="panel-subtitle">Text or voice replies appear here.</div>
+
+            <div className="chat-feed">
+              {messages.map((msg, i) => (
+                <div
+                  key={i}
+                  className={`chat-row ${msg.role === "user" ? "chat-right" : "chat-left"} ${
+                    msg.role === "system" ? "chat-system" : ""
+                  }`}
+                >
+                  <div
+                    className={`chat-bubble ${
+                      msg.role === "user"
+                        ? "bubble-user"
+                        : msg.role === "system"
+                        ? "bubble-system"
+                        : "bubble-assistant"
+                    }`}
+                  >
+                    {msg.content}
+                    {msg.role === "assistant" && msg.trace && (
+                      <div className="trace-row">
+                        {msg.trace.map((t, idx) => (
+                          <span key={`${t.agent}-${idx}`} className={`trace-pill ${t.skipped ? "trace-skip" : ""}`}>
+                            {t.agent.toUpperCase()} {t.skipped ? "skipped" : `${t.duration_ms}ms`}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {currentResponse && (
+                <div className="chat-row chat-left">
+                  <div className="chat-bubble bubble-assistant">
+                    {currentResponse}
+                    <span className="inline-block w-2 h-4 bg-cyan-300 ml-1 animate-pulse" />
+                  </div>
+                </div>
+              )}
+              <div ref={bottomRef} />
+            </div>
+
+            <div className="input-shell">
+              <input
+                className="input-field"
+                placeholder="Type a message…"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && sendText()}
+              />
+              <button onClick={sendText} className="input-send">
+                <Send size={18} />
+                <span className="hidden sm:inline">Send</span>
+              </button>
+            </div>
+          </section>
         </div>
       </div>
     </div>

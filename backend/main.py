@@ -1,13 +1,22 @@
 import asyncio
 import base64
 import json
+import logging
+import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from agents.jarvis_agent import get_jarvis_response
+from agents.orchestrator import get_orchestrator
+from agents.registry import registry
+from config import ORCHESTRATOR_VERSION
 from voice.stt import create_deepgram_connection
 from voice.tts import text_to_speech_stream
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = FastAPI()
+start_time = time.monotonic()
+orchestrator = get_orchestrator()
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,6 +25,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/agents/status")
+async def agents_status():
+    uptime_seconds = int(time.monotonic() - start_time)
+    return {
+        "agents": registry.get_status(),
+        "orchestrator_version": ORCHESTRATOR_VERSION,
+        "uptime_seconds": uptime_seconds,
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -78,7 +96,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await enqueue_speech(llm_buffer.strip())
                 llm_buffer = ""
 
-        full_response = await get_jarvis_response(
+        full_response, trace, new_history = await orchestrator.process(
             user_message,
             conversation_history,
             stream_callback=stream_token
@@ -94,15 +112,13 @@ async def websocket_endpoint(websocket: WebSocket):
         except asyncio.TimeoutError:
             await send_json({"type": "error", "message": "TTS timed out. Continuing."})
 
+        conversation_history.clear()
+        conversation_history.extend(new_history)
         conversation_history.append({"role": "user", "content": user_message})
         conversation_history.append({"role": "assistant", "content": full_response})
 
-        # Keep history at max 20 messages
-        if len(conversation_history) > 20:
-            conversation_history.pop(0)
-            conversation_history.pop(0)
-
         await send_json({"type": "response_complete", "full_text": full_response})
+        await send_json({"type": "agent_trace", "trace": trace})
         await send_json({"type": "status", "status": "idle"})
 
     # Start audio worker
