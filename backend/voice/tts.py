@@ -24,6 +24,7 @@ async def text_to_speech_stream(text: str):
     
     async with httpx.AsyncClient(timeout=30) as client:
         async with client.stream("POST", url, headers=headers, json=payload) as response:
+            response.raise_for_status()
             async for chunk in response.aiter_bytes(chunk_size=4096):
                 if chunk:
                     yield chunk

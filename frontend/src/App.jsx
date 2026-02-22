@@ -47,9 +47,16 @@ export default function App() {
           setCurrentResponse("");
           setStatus("idle");
           break;
+        case "error":
+          setMessages((prev) => [...prev, { role: "system", content: `Error: ${data.message}` }]);
+          setStatus("idle");
+          break;
       }
     });
     jarvisRef.current.connect();
+    return () => {
+      jarvisRef.current?.close();
+    };
   }, []);
 
   useEffect(() => {

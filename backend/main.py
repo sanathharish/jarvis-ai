@@ -22,16 +22,18 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     conversation_history = []
     dg_connection = None
+    send_lock = asyncio.Lock()
 
     # Audio queue to prevent overlap
     audio_queue = asyncio.Queue()
     audio_worker_task = None
 
     async def send_json(data: dict):
-        try:
-            await websocket.send_text(json.dumps(data))
-        except Exception:
-            pass
+        async with send_lock:
+            try:
+                await websocket.send_text(json.dumps(data))
+            except Exception:
+                pass
 
     async def audio_worker():
         """Processes speech queue one sentence at a time — no overlap."""
@@ -47,6 +49,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await send_json({"type": "audio_done"})
             except Exception as e:
                 print(f"TTS error: {e}")
+                await send_json({"type": "error", "message": f"TTS error: {e}"})
             finally:
                 audio_queue.task_done()
 
@@ -85,8 +88,11 @@ async def websocket_endpoint(websocket: WebSocket):
         if llm_buffer.strip():
             await enqueue_speech(llm_buffer.strip())
 
-        # Wait for all speech to finish
-        await audio_queue.join()
+        # Wait for all speech to finish (avoid hanging forever)
+        try:
+            await asyncio.wait_for(audio_queue.join(), timeout=30)
+        except asyncio.TimeoutError:
+            await send_json({"type": "error", "message": "TTS timed out. Continuing."})
 
         conversation_history.append({"role": "user", "content": user_message})
         conversation_history.append({"role": "assistant", "content": full_response})
@@ -104,19 +110,27 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         async for message in websocket.iter_text():
-            data = json.loads(message)
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError:
+                await send_json({"type": "error", "message": "Invalid JSON from client."})
+                continue
             msg_type = data.get("type")
 
             if msg_type == "start_listening":
                 loop = asyncio.get_event_loop()
-                dg_connection = create_deepgram_connection(
-                    on_interim_transcript, on_final_transcript, loop
-                )
-                if dg_connection:
-                    await send_json({"type": "status", "status": "listening"})
-                else:
+                try:
+                    dg_connection = create_deepgram_connection(
+                        on_interim_transcript, on_final_transcript, loop
+                    )
+                    if dg_connection:
+                        await send_json({"type": "status", "status": "listening"})
+                    else:
+                        await send_json({"type": "status", "status": "idle"})
+                        await send_json({"type": "error", "message": "Microphone connection failed. Check Deepgram key."})
+                except Exception as e:
                     await send_json({"type": "status", "status": "idle"})
-                    await send_json({"type": "error", "message": "Microphone connection failed. Check Deepgram key."})
+                    await send_json({"type": "error", "message": f"STT setup error: {e}"})
 
             elif msg_type == "audio_chunk":
                 if dg_connection and dg_connection.is_connected():
@@ -125,6 +139,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         dg_connection.send(audio_bytes)
                     except Exception as e:
                         print(f"Audio send error: {e}")
+                        await send_json({"type": "error", "message": f"Audio send error: {e}"})
+                else:
+                    await send_json({"type": "error", "message": "Audio received while STT is not connected."})
 
             elif msg_type == "stop_listening":
                 if dg_connection:
@@ -136,7 +153,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 await send_json({"type": "status", "status": "idle"})
 
             elif msg_type == "text_message":
-                await process_message(data["text"])
+                if "text" not in data:
+                    await send_json({"type": "error", "message": "Missing text in text_message."})
+                else:
+                    await process_message(data["text"])
+            else:
+                await send_json({"type": "error", "message": f"Unknown message type: {msg_type}"})
 
     except WebSocketDisconnect:
         pass
